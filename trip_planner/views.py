@@ -180,6 +180,7 @@ class TripPlannerView(APIView):
             # Tracking HOS limits
             current_day_driving = 0
             current_day_duty = 0
+            total_cycle_duty = cycle_used
             
             def finish_day():
                 nonlocal current_time_in_day, current_day_events, day_count, current_day_driving, current_day_duty
@@ -206,7 +207,7 @@ class TripPlannerView(APIView):
                 current_day_duty = 0
 
             def add_event_to_timeline(type, duration, distance, desc):
-                nonlocal current_time_in_day, current_day_events, current_day_driving, current_day_duty
+                nonlocal current_time_in_day, current_day_events, current_day_driving, current_day_duty, total_cycle_duty
                 remaining_event_duration = duration
                 
                 while remaining_event_duration > 0:
@@ -217,20 +218,28 @@ class TripPlannerView(APIView):
                         
                     duration_to_add = min(remaining_event_duration, time_left_in_day)
                     
-                    # If it's a driving/duty event, we must also check daily HOS limits
+                    # If it's a driving/duty event, we must also check daily HOS limits AND cycle limits
                     if type in ['DRIVING', 'ON_DUTY_NOT_DRIVING']:
                         # 11hr driving limit, 14hr duty limit
                         if type == 'DRIVING':
-                            limit_left = min(11 - current_day_driving, 14 - current_day_duty)
+                            daily_limit_left = min(11 - current_day_driving, 14 - current_day_duty)
                         else:
-                            limit_left = 14 - current_day_duty
+                            daily_limit_left = 14 - current_day_duty
+                        
+                        # Cycle limit (70 hours)
+                        cycle_limit_left = 70 - total_cycle_duty
+                        
+                        if cycle_limit_left <= 0:
+                            # Must take 34-hour restart
+                            add_34_hour_restart()
+                            continue
                             
-                        if limit_left <= 0:
+                        if daily_limit_left <= 0:
                             # Must take 10 hour rest break now
                             add_rest_break(10)
                             continue
                             
-                        duration_to_add = min(duration_to_add, limit_left)
+                        duration_to_add = min(duration_to_add, daily_limit_left, cycle_limit_left)
                     
                     current_day_events.append({
                         "type": type,
@@ -243,6 +252,7 @@ class TripPlannerView(APIView):
                         current_day_driving += duration_to_add
                     if type in ['DRIVING', 'ON_DUTY_NOT_DRIVING']:
                         current_day_duty += duration_to_add
+                        total_cycle_duty += duration_to_add
                         
                     current_time_in_day += duration_to_add
                     remaining_event_duration -= duration_to_add
@@ -252,6 +262,11 @@ class TripPlannerView(APIView):
 
             def add_rest_break(duration):
                 add_event_to_timeline("SLEEPER", duration, 0, "Mandatory 10-hour Rest")
+            
+            def add_34_hour_restart():
+                nonlocal total_cycle_duty
+                add_event_to_timeline("OFF_DUTY", 34, 0, "34-hour Cycle Restart")
+                total_cycle_duty = 0 # Reset cycle duty after 34-hour restart
 
             # Process all trip events
             for event in events:
