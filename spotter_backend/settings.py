@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure-2-uc0z%*h+eu%6x6@46f#v)1z#py$0lsy2_b13$a696ucrbc))
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['https://spottertruckertripplanner.vercel.app', 'http://localhost:8000']  # TODO: Change this in production
 
 
 # Application definition
