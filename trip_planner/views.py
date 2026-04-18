@@ -1,11 +1,11 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.exceptions import ValidationError
 from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
 import requests
-import math
-from datetime import datetime, timedelta
+from .serializers import TripPlanRequestSerializer
 
 class TripPlannerView(APIView):
     def __init__(self, **kwargs):
@@ -71,8 +71,10 @@ class TripPlannerView(APIView):
         # 2. Add 30-minute rest break after 8 hours of driving
         events_with_rest = []
         driving_since_break = 0
+        non_driving_streak = 0
         for event in events_with_fuel:
             if event['type'] == 'DRIVING':
+                non_driving_streak = 0
                 remaining_duration = event['duration']
                 while driving_since_break + remaining_duration >= 8:
                     can_drive = 8 - driving_since_break
@@ -91,6 +93,7 @@ class TripPlannerView(APIView):
                     })
                     remaining_duration -= can_drive
                     driving_since_break = 0
+                    non_driving_streak = 0
                 if remaining_duration > 0:
                     events_with_rest.append({
                         "type": "DRIVING",
@@ -101,6 +104,9 @@ class TripPlannerView(APIView):
                     driving_since_break += remaining_duration
             else:
                 events_with_rest.append(event)
+                non_driving_streak += event['duration']
+                if non_driving_streak >= 0.5:
+                    driving_since_break = 0
         
         return self.simulate_daily_logs(events_with_rest, initial_cycle_used)
 
@@ -191,11 +197,15 @@ class TripPlannerView(APIView):
 
     def post(self, request):
         try:
+            serializer = TripPlanRequestSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            validated = serializer.validated_data
+
             # 1. Geocoding
             locations, error = self.geocode_locations({
-                'current': request.data.get('current_location'),
-                'pickup': request.data.get('pickup_location'),
-                'dropoff': request.data.get('dropoff_location')
+                'current': validated['current_location'],
+                'pickup': validated['pickup_location'],
+                'dropoff': validated['dropoff_location']
             })
             if error:
                 return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
@@ -208,7 +218,7 @@ class TripPlannerView(APIView):
                 return Response({"error": f"Routing failed: {status_p if not route_p else status_d}"}, status=status.HTTP_400_BAD_REQUEST)
 
             # 3. Preparation
-            cycle_used = float(request.data.get('cycle_used', 0))
+            cycle_used = float(validated.get('cycle_used', 0))
             raw_events = [
                 {"type": "DRIVING", "duration": route_p['duration'] / 3600, "distance": route_p['distance'] * 0.000621371, "desc": "To Pickup"},
                 {"type": "ON_DUTY_NOT_DRIVING", "duration": 1, "distance": 0, "desc": "Pickup/Loading"},
@@ -232,5 +242,7 @@ class TripPlannerView(APIView):
                 "daily_logs": daily_logs
             })
 
+        except ValidationError as e:
+            return Response(e.detail, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
